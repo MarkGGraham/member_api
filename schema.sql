@@ -1,5 +1,5 @@
 create table users (
-    id integer primary key autoincrement,
+    id serial primary key,
     name text not null,
     password text not null,
     expert boolean not null,
@@ -8,9 +8,9 @@ create table users (
 );
 
 create table questions (
-    id integer primary key autoincrement,
+    id serial primary key,
     question text not null,
     answer text,
-    asked_by_id integer not null,
-    expert_id integer not null
+    asked_by_id serial not null,
+    expert_id serial not null
 );
