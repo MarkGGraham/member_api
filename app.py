@@ -1,107 +1,196 @@
-from flask import Flask, render_template, request, g
-from datetime import datetime
-from database import connect_db, get_db
+from flask import Flask, render_template, g, request, session, redirect, url_for
+from database import get_db
+from werkzeug.security import generate_password_hash, check_password_hash
+import os
 
 app = Flask(__name__)
+app.config['SECRET_KEY'] = os.urandom(24)
 
 @app.teardown_appcontext
-def close_db(error):    
+def close_db(error):
     if hasattr(g, 'sqlite_db'):
         g.sqlite_db.close()
 
-@app.route('/', methods=['POST','GET'])
-@app.route('/index', methods=['POST','GET'])
+def get_current_user():
+    user_result = None
+
+    if 'user' in session:
+        user = session['user']
+
+        db = get_db()
+        user_cur = db.execute('select id, name, password, expert, admin from users where name = ?', [user])
+        user_result = user_cur.fetchone()
+
+    return user_result
+
+@app.route('/')
 def index():
+    user = get_current_user()
     db = get_db()
-    if request.method=='POST':
-        date = request.form['date']
+    # answered questions
+    answered_cur = db.execute('''select questions.id, questions.question, users.name as asked_by_name, users2.name as answered_by_name
+        from questions 
+        join users on users.id = questions.asked_by_id 
+        join users as users2 on users2.id = questions.expert_id
+        where answer is not null
+        order by questions.id''')
 
-        dt = datetime.strptime(date, '%Y-%m-%d')
-        database_date = datetime.strftime(dt, '%Y%m%d')
+    answered = answered_cur.fetchall()
 
-        db.execute('insert into log_date(entry_date) values (?)', [database_date])
-        db.commit()
-         
-    cur = db.execute('select log_date.entry_date, sum(food.protein) as protein, sum(food.carbohydrates) as carbs, sum(food.fat) as fats, sum(food.calories) as calories from log_date join food_date on food_date.log_date_id = log_date.id join food on food.id = food_date.food_id group by log_date.id order by log_date.entry_date desc ')
-    results = cur.fetchall()
+    return render_template('home.html', user=user, answered = answered)
 
-    date_results = []
-    for i in results:
-        single_date = {}
-
-        single_date['entry_date'] = i['entry_date']
-        single_date['protein'] = i['protein']
-        single_date['carbs'] = i['carbs']
-        single_date['fats'] = i['fats']
-        single_date['calories'] = i['calories']
-
-        d = datetime.strptime(str(i['entry_date']), '%Y%m%d')
-        single_date['pretty_date'] = datetime.strftime(d, '%B %d, %Y')
-
-        date_results.append(single_date)
-    return render_template('home.html', results=date_results)
-
-@app.route('/view/<food_date>', methods=['GET','POST'])
-def view(food_date):
-    db = get_db()
-    cur = db.execute('select id, entry_date from log_date where entry_date = (?)', [food_date])
-
-    date_result = cur.fetchone()
+@app.route('/register', methods=['GET', 'POST'])
+def register():
+    user = get_current_user()
 
     if request.method == 'POST':
-        print('food-select:#{}'.format(request.form['food-select']))
-        # print('id:#{}'.format(date_result['id']))    
-        # return '<h1>The food item added is #{}</h1>'.format(request.form['food-select'])
-        db.execute('insert into food_date(food_id, log_date_id) values (?, ?)', [request.form['food-select'], date_result['id']])
+
+        db = get_db()
+        existing_user_cur = db.execute('select id from users where name = ? ', [request.form['name']])
+        existing_user = existing_user_cur.fetchone()
+
+        if existing_user:
+            return render_template('register.html', user=user, error='User already exists!')
+
+
+        hashed_password = generate_password_hash(request.form['password'], method='sha256')
+        db.execute('insert into users (name, password, expert, admin) values (?, ?, ?, ?)', [request.form['name'], hashed_password, '0', '0'])
         db.commit()
 
-    d = datetime.strptime(str(date_result['entry_date']),'%Y%m%d')
-    pretty_date = datetime.strftime(d, '%B %d, %Y')
+        session['user'] = request.form['name']
 
-    food_cur = db.execute('select id, name from food')
-    food_results = food_cur.fetchall()
+        return redirect(url_for('index'))
 
-    log_cur = db.execute('select food.name, food.protein, food.carbohydrates, food.fat, food.calories from log_date \
-        join food_date on food_date.log_date_id = log_date.id \
-        join food on food.id = food_date.food_id where log_date.entry_date = (?)', [food_date] )
-    # print('id:{}'.format(food_results['id']))
-    log_results = log_cur.fetchall()
+    return render_template('register.html', user=user)
 
-    totals = {}
-    totals['protein'] = 0 
-    totals['carbohydrates'] = 0
-    totals['fat'] = 0
-    totals['calories'] = 0
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    user = get_current_user()
+    error = None 
 
-
-    for food in log_results:
-        totals['protein'] += food['protein']
-        totals['carbohydrates'] += food['carbohydrates']
-        totals['fat'] += food['fat']
-        totals['calories'] += food['calories'] 
-
-
-    return render_template('day.html', entry_date=date_result['entry_date'], pretty=pretty_date, food_results=food_results, log_results=log_results, totals=totals, )
-
-
-@app.route('/food', methods=['GET','POST'])    
-def food():
-    db = get_db()
     if request.method == 'POST':
-        name = request.form['food-name']
-        protein = int(request.form['protein'])
-        carbohydrates = int(request.form['carbohydrates'])
-        fat = int(request.form['fat'])
-        calories = protein * 4 + carbohydrates * 4 + fat * 9
-        # print('calories: {}'.format(calories))
-        db.execute('insert into food (name, protein, carbohydrates, fat, calories) values (?,?,?,?,?) ',  \
-            [name, protein, carbohydrates, fat, calories])
+        db = get_db()
+
+        name = request.form['name']
+        password = request.form['password']
+
+        user_cur = db.execute('select id, name, password from users where name = ?', [name])
+        user_result = user_cur.fetchone()
+
+        if user_result:
+
+            if check_password_hash(user_result['password'], password):
+                session['user'] = user_result['name']
+                return redirect(url_for('index'))
+            else:
+                error = 'The password is incorrect.'
+        else:
+            error = 'The username is incorrect.'
+        
+    return render_template('login.html', user=user, error=error)
+
+@app.route('/question/<question_id>')
+def question(question_id):
+    user = get_current_user()
+    db = get_db()
+    question_cur = db.execute('''select questions.question, questions.answer, users.name as asked_by_name, users2.name as answered_by_name
+        from questions 
+        join users on users.id = questions.asked_by_id 
+        left join users as users2 on users2.id = questions.expert_id
+        where questions.id = (?)''', [question_id])
+    question = question_cur.fetchone()
+
+    return render_template('question.html', user=user, question=question)
+
+@app.route('/answer/<question_id>', methods=['GET','POST'])
+def answer(question_id):
+    user = get_current_user()
+    if not user:
+        return redirect(url_for('login'))
+
+    if user['expert'] == 0:
+        return redirect(url_for('index'))
+
+    db = get_db()
+
+    if request.method == 'POST':
+        db.execute('update questions set answer = ? where id = ?', [request.form['answer'], question_id])
         db.commit()
+        return redirect(url_for('unanswered'))
 
-    cur = db.execute('select name, protein, carbohydrates, fat, calories from food')
-    results = cur.fetchall()
-    return render_template('add_food.html', results=results)
 
+    question_cur = db.execute('select id, question from questions where id = ?', [question_id])
+    question = question_cur.fetchone()
+
+    return render_template('answer.html', user=user, question=question)
+
+@app.route('/ask', methods=['GET','POST'])
+def ask():
+    user = get_current_user()
+
+    if not user:
+        return redirect(url_for('login'))
+
+    db = get_db()
+
+    if request.method == 'POST':
+        db.execute('insert into questions (question, asked_by_id, expert_id) values (?, ?, ?) ', [request.form['question'], user['id'], request.form['expert']])
+        db.commit()
+        return '<h1>Question:{}, Expert Id:{}</h1>'.format(request.form['question'], request.form['expert'])
+    
+    experts_cur = db.execute('select id, name from users where expert = 1')
+    expert_results = experts_cur.fetchall()
+    return render_template('ask.html', user=user, experts=expert_results)
+
+@app.route('/unanswered')
+def unanswered():
+    user = get_current_user()
+
+    if not user:
+        return redirect(url_for('login'))
+
+    if user['expert'] == 0:
+        return redirect(url_for('index'))
+
+    db = get_db()
+    question_cur = db.execute('select questions.id, questions.question, users.name from questions join users on users.id = questions.asked_by_id where answer is null and expert_id = ?', [user['id']])
+    questions = question_cur.fetchall()
+    return render_template('unanswered.html', user=user, questions=questions)
+
+@app.route('/users')
+def users():
+    user = get_current_user()
+    if not user:
+        return redirect(url_for('login'))
+
+    if user['admin'] == 0:
+        return redirect(url_for('index'))
+
+    db = get_db()
+    users_cur = db.execute('select id, name, expert, admin from users')
+    users_results = users_cur.fetchall()
+    return render_template('users.html', user=user, users=users_results)
+
+@app.route('/promote/<user_id>')    
+def promote(user_id):
+
+    user = get_current_user()
+
+    if not user:
+        return redirect(url_for('login'))
+
+    if user['admin'] == 0:
+        return redirect(url_for('index'))        
+
+    db = get_db()
+    db.execute('update users set expert = 1 where id = ?', [user_id])
+    db.commit()
+    return redirect(url_for('users'))
+
+@app.route('/logout')
+def logout():
+    session.pop('user', None)
+    return redirect(url_for('index'))
 
 if __name__ == '__main__':
     app.run(debug=True)

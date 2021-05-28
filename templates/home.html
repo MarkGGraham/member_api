@@ -1,54 +1,29 @@
 {% extends "base.html" %}
+{% from "show_links.html" import show_links %}
+
+{% block title %}Amswered Questions{% endblock %}
+
+{% block nav %}
+{{ show_links(user) }}
+{% endblock %}
+
 {% block body %}
-    <nav class="navbar navbar-inverse navbar-fixed-top">
-      <div class="container">
-        <div class="navbar-header">
-          <a class="navbar-brand" href="{{ url_for ('index') }}">Food Tracker</a>
-        </div>
-        <div id="navbar" class="navbar-collapse collapse">
-          <ul class="nav navbar-nav">
-            <li class="active"><a href="{{ url_for ( 'index' )}}">Home</a></li>
-            <li><a href="{{ url_for( 'food' )}}">Add Food Item</a></li>
-          </ul>
-        </div>
+
+      <div class="page-header">
+        <h1>Answered Questions</h1>
       </div>
-    </nav>
-
-    <div class="container theme-showcase col-sm-6 col-sm-offset-3" role="main">
-
       <div class="row">
-        <div>
-          <form method="POST" action="/">
-            <div class="form-group">
-              <label for="new-day">New Day</label>
-              <input type="date" class="form-control" name="date" id="new-day">
-            </div>
-
-            <button type="submit" class="btn btn-primary">Add</button>
-          </form>
-
-          <div class="page-header"></div>
-
-          {% for r in results %}
-
-          <div class="panel panel-primary">
-            <div class="panel-heading">
-              <h3 class="panel-title">{{ r.pretty_date }}</h3>
-            </div>
-            <div class="panel-body">
-              <ul class="nav nav-pills" role="tablist">
-                <li><a>Protein: <span class="badge">{{ r.protein }}</span></a></li>
-                <li><a>Carbohydates: <span class="badge">{{ r.carbs }}</span></a></li>
-                <li><a>Fat: <span class="badge">{{ r.fats }}</span></a></li>
-                <li><a>Calories: <span class="badge">{{ r.calories }}</span></a></li>
-                <li><a href="{{ url_for('view', food_date=r.entry_date) }}" type="button" class="btn btn-link">View Detail</a></li>
-              </ul>
-            </div>
+        <div class="col-lg-12">
+          <div class="list-group">
+            {% for answer in answered %}
+            <a href="{{ url_for('question', question_id = answer['id']) }}" class="list-group-item">
+              <h4 class="list-group-item-heading">Question {{ answer.id }}</h4>
+              <p class="list-group-item-text">Asked by: {{ answer.asked_by_name }}</p>
+              <p class="list-group-item-text">Answered by: {{ answer.answered_by_name }}</p>
+            </a>
+            {% endfor %}
           </div>
-          {% endfor %}
-        </div>
+        </div><!-- /.col-lg-12 -->
       </div>
-
-    </div>
 
 {% endblock %}
