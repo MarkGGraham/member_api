@@ -1,194 +1,108 @@
-from flask import Flask, render_template, g, request, session, redirect, url_for
+from flask import Flask, g, json, request, jsonify
 from database import get_db
-from werkzeug.security import generate_password_hash, check_password_hash
-import os
+from functools import wraps
 
 app = Flask(__name__)
-app.config['SECRET_KEY'] = os.urandom(24)
+
+api_username = 'admin' 
+api_password = 'password'
+
+def protected(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        auth = request.authorization
+        if auth and auth.username == api_username and auth.password == api_password:
+            return f(*args, **kwargs)
+        
+        return jsonify({'message' : 'Authentication failed!'}), 401
+    
+    return decorated
 
 @app.teardown_appcontext
 def close_db(error):
-    if hasattr(g, 'postgres_db_curn'):
-        g.postgres_db_cur.close()
+    if hasattr(g, 'sqlite_db'):
+        g.sqlite_db.close()
 
-    if hasattr(g, 'postgres_db_conn'):
-        g.postgres_db_conn.close()
-
-def get_current_user():
-    user_result = None
-
-    if 'user' in session:
-        user = session['user']
-
-        db = get_db()
-        db.execute('select id, name, password, expert, admin from users where name = %s', (user, ))
-        user_result = db.fetchone()
-
-    return user_result
-
-@app.route('/')
-def index():
-    user = get_current_user()
-    db = get_db()
-    # answered questions
-    db.execute('''select questions.id, questions.question, users.name as asked_by_name, users2.name as answered_by_name
-        from questions 
-        join users on users.id = questions.asked_by_id 
-        join users as users2 on users2.id = questions.expert_id
-        where answer is not null
-        order by questions.id''')
-
-    answered = db.fetchall()
-
-    return render_template('home.html', user=user, answered = answered)
-
-@app.route('/register', methods=['GET', 'POST'])
-def register():
-    user = get_current_user()
-
-    if request.method == 'POST':
-
-        db = get_db()
-        db.execute('select id from users where name = %s ', (request.form['name'], ) )
-        existing_user = db.fetchone()
-
-        if existing_user:
-            return render_template('register.html', user=user, error='User already exists!')
-
-
-        hashed_password = generate_password_hash(request.form['password'], method='sha256')
-        db.execute('insert into users (name, password, expert, admin) values (%s, %s, %s, %s)', (request.form['name'], hashed_password, '0', '0',))
-
-        session['user'] = request.form['name']
-
-        return redirect(url_for('index'))
-
-    return render_template('register.html', user=user)
-
-@app.route('/login', methods=['GET', 'POST'])
-def login():
-    user = get_current_user()
-    error = None 
-
-    if request.method == 'POST':
-        db = get_db()
-
-        name = request.form['name']
-        password = request.form['password']
-
-        db.execute('select id, name, password from users where name = %s', (name, ))
-        user_result = db.fetchone()
-
-        if user_result:
-
-            if check_password_hash(user_result['password'], password):
-                session['user'] = user_result['name']
-                return redirect(url_for('index'))
-            else:
-                error = 'The password is incorrect.'
-        else:
-            error = 'The username is incorrect.'
-        
-    return render_template('login.html', user=user, error=error)
-
-@app.route('/question/<question_id>')
-def question(question_id):
-    user = get_current_user()
-    db = get_db()
-    db.execute('''select questions.question, questions.answer, users.name as asked_by_name, users2.name as answered_by_name
-        from questions 
-        join users on users.id = questions.asked_by_id 
-        left join users as users2 on users2.id = questions.expert_id
-        where questions.id = (%s)''', (question_id, ))
-    question = db.fetchone()
-
-    return render_template('question.html', user=user, question=question)
-
-@app.route('/answer/<question_id>', methods=['GET','POST'])
-def answer(question_id):
-    user = get_current_user()
-    if not user:
-        return redirect(url_for('login'))
-
-    if not user['expert']:
-        return redirect(url_for('index'))
-
+@app.route('/member', methods=['GET'])
+@protected
+def get_members():
     db = get_db()
 
-    if request.method == 'POST':
-        db.execute('update questions set answer = %s where id = %s', (request.form['answer'], question_id, ))
-        return redirect(url_for('unanswered'))
+    member_cur = db.execute('select id, name, email, level from members order by id')
+    members = member_cur.fetchall()
+
+    return_values = []
+
+    for member in members:
+        member_dict = {}
+        member_dict['id'] = member['id']
+        member_dict['name'] = member['name'] 
+        member_dict['email'] = member['email']
+        member_dict['level'] = member['level'] 
+
+        return_values.append(member_dict)
+
+    return jsonify({'members' : return_values})
 
 
-    db.execute('select id, question from questions where id = %s', (question_id, ))
-    question = db.fetchone()
-
-    return render_template('answer.html', user=user, question=question)
-
-@app.route('/ask', methods=['GET','POST'])
-def ask():
-    user = get_current_user()
-
-    if not user:
-        return redirect(url_for('login'))
-
-    db = get_db()
-
-    if request.method == 'POST':
-        db.execute('insert into questions (question, asked_by_id, expert_id) values (%s, %s, %s) ', (request.form['question'], user['id'], request.form['expert'], ))
     
-    db.execute('select id, name from users where expert = True')
-    expert_results = db.fetchall()
-    return render_template('ask.html', user=user, experts=expert_results)
+@app.route('/member/<int:member_id>', methods=['GET'])    
+@protected
+def get_member(member_id):
+    db = get_db()
 
-@app.route('/unanswered')
-def unanswered():
-    user = get_current_user()
+    member_cur = db.execute('select id, name, email, level from members where id = ?', [member_id])
+    member = member_cur.fetchone()
 
-    if not user:
-        return redirect(url_for('login'))
+    return jsonify({'member': {'id' : member['id'], 'name' : member['name']}})
 
-    if not user['expert']:
-        return redirect(url_for('index'))
+@app.route('/member', methods=['POST'])
+@protected
+def add_member():
+    new_member_data = request.get_json()
+
+    name = new_member_data['name']
+    email = new_member_data['email']
+    level = new_member_data['level']
 
     db = get_db()
-    db.execute('select questions.id, questions.question, users.name from questions join users on users.id = questions.asked_by_id where answer is null and expert_id = %s', (user['id'], ))
-    questions = db.fetchall()
-    return render_template('unanswered.html', user=user, questions=questions)
+    db.execute('insert into members(name, email, level) values (?, ?, ?)',  [name, email, level])
+    db.commit()
 
-@app.route('/users')
-def users():
-    user = get_current_user()
-    if not user:
-        return redirect(url_for('login'))
+    member_cur = db.execute('select id, name, level from members where name = ?', [name])
+    new_member = member_cur.fetchone()
 
-    if not user['admin']:
-        return redirect(url_for('index'))
+    return jsonify({'id' : new_member['id'], 'name' : new_member['name'], 'level' : new_member['level']})
 
-    db = get_db()
-    db.execute('select id, name, expert, admin from users')
-    users_results = db.fetchall()
-    return render_template('users.html', user=user, users=users_results)
+@app.route('/member/<int:member_id>', methods=['PUT','PATCH'])
+@protected
+def edit_member(member_id):
 
-@app.route('/promote/<user_id>')    
-def promote(user_id):
+    new_member_data = request.get_json()
 
-    user = get_current_user()
-
-    if not user:
-        return redirect(url_for('login'))
-
-    if not user['admin']:
-        return redirect(url_for('index'))        
+    name = new_member_data['name']
+    email = new_member_data['email']
+    level = new_member_data['level']
 
     db = get_db()
-    db.execute('update users set expert = True where id = %s', (user_id, ))
-    return redirect(url_for('users'))
+    db.execute('update members set name = ?, email = ?, level =? where id = ?',[name, email, level, member_id])
+    db.commit();
 
-@app.route('/logout')
-def logout():
-    session.pop('user', None)
-    return redirect(url_for('index'))
+    member_cur = db.execute('select id, name, email, level from members where id = ?', [member_id])
+    member = member_cur.fetchone()
+
+    return jsonify({'member': {'id' : member['id'], 'name' : member['name'], 'email' : member['email']}})
+    
+
+@app.route('/member/<int:member_id>', methods=['DELETE'])
+@protected
+def delete_member(member_id):
+    db = get_db()
+    db.execute('delete members where id = ?', [member_id])
+    db.commit();
+
+    return jsonify({'message' : 'member deleted'})
 
 if __name__ == '__main__':
     app.run(debug=True)
+
